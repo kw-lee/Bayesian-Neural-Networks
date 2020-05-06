@@ -783,6 +783,19 @@ class BBP_Bayes_RegNet(BBP_Bayes_Net):
         else:
             print('    Total params: %.2fM' % (tot_nb_parameters / 1e6))
 
+    def create_opt(self):
+        """create optimizer
+
+        Use Adam optimizer
+        """
+        self.optimizer = torch.optim.Adam(
+            self.model.parameters(), lr=self.lr)
+        # self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.lr, momentum=0)
+
+        # self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.lr, momentum=0.9)
+        # self.sched = torch.optim.lr_scheduler.StepLR(
+        #     self.optimizer, step_size=1, gamma=10, last_epoch=-1)
+
     def fit(self, x, y, samples=1):
         """fitting model
 
@@ -832,7 +845,7 @@ class BBP_Bayes_RegNet(BBP_Bayes_Net):
             mlpdw = mlpdw_cum / samples
             Edkl = Edkl_cum / samples
 
-        loss = Edkl + mlpdw
+        loss = (Edkl + mlpdw) / x.shape[0]
         loss.backward()
         self.optimizer.step()
 
@@ -884,7 +897,7 @@ class BBP_Bayes_RegNet(BBP_Bayes_Net):
         Returns
         -------
         float
-            loss = complexity + negative-loglikelihood
+            nll = negative-loglikelihood
         torch.tensor
             predicted mean
         torch.tensor
@@ -916,7 +929,7 @@ class BBP_Bayes_RegNet(BBP_Bayes_Net):
         Returns
         -------
         float
-            loss = complexity + negative-loglikelihood
+            nll = complexity + negative-loglikelihood
         float
             accuracy
         torch.tensor
