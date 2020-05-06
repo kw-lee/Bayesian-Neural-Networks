@@ -826,7 +826,7 @@ class BBP_Bayes_RegNet(BBP_Bayes_Net):
             mlpdw = -isotropic_gauss_loglike(
                 y, 
                 mu=out[:, :self.output_dim], 
-                sigma=w_to_std(out[:, self.output_dim:]), 
+                sigma=out[:, self.output_dim:].exp(), 
                 do_sum=True)
             Edkl = (tlqw - tlpw) / self.Nbatches
         elif samples > 1:
@@ -837,7 +837,7 @@ class BBP_Bayes_RegNet(BBP_Bayes_Net):
                 mlpdw_i = -isotropic_gauss_loglike(
                     y, 
                     mu=out[:, :self.output_dim], 
-                    sigma=w_to_std(out[:, self.output_dim:]), 
+                    sigma=out[:, self.output_dim:].exp(), 
                     do_sum=True)
                 Edkl_i = (tlqw - tlpw) / self.Nbatches
                 mlpdw_cum += mlpdw_i
@@ -875,7 +875,7 @@ class BBP_Bayes_RegNet(BBP_Bayes_Net):
 
         out, _, _ = self.model(x)
         pred_mean = out[:, :self.output_dim]
-        pred_sigma = w_to_std(out[:, self.output_dim:])
+        pred_sigma = out[:, self.output_dim:].exp()
         
         if onlydata:
             return pred_mean.data, pred_sigma.data
@@ -940,7 +940,7 @@ class BBP_Bayes_RegNet(BBP_Bayes_Net):
         out, _, _ = self.model.sample_predict(x, Nsamples)
 
         pred_mean = out[:, :, :self.output_dim]
-        pred_sigma = w_to_std(out[:, :, self.output_dim:])
+        pred_sigma = out[:, :, self.output_dim:].exp()
 
         mean_pred_mean = pred_mean.mean(dim=0, keepdim=False)
         mean_pred_sigma = pred_sigma.mean(dim=0, keepdim=False)
