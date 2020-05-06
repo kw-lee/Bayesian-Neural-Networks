@@ -1,5 +1,9 @@
-from src.utils import *
+"""Modules consists of base network
+"""
 
+from src.utils import cprint
+import numpy as np
+import torch 
 
 class BaseNet(object):
     def __init__(self):

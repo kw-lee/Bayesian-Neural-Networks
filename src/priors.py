@@ -2,6 +2,10 @@ from __future__ import division
 import numpy as np
 import torch
 
+__all__ = [
+    'isotropic_gauss_loglike', 'laplace_prior', 
+    'isotropic_gauss_prior', 'spike_slab_2GMM'
+]
 
 def isotropic_gauss_loglike(x, mu, sigma, do_sum=True):
     cte_term = -(0.5) * np.log(2 * np.pi)

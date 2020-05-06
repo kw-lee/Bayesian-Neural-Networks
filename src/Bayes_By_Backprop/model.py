@@ -1,20 +1,41 @@
 from src.priors import *
+from src.base_net import BaseNet
 
-from src.base_net import *
-
+import numpy as np
+import torch
 import torch.nn.functional as F
+from torch.autograd import Variable
 import torch.nn as nn
 import copy
+from src.utils import cprint, to_variable
+from src.priors import isotropic_gauss_loglike, laplace_prior
+
+def w_to_std(w, beta=1, threshold=20):
+    std_w = 1e-6 + F.softplus(w, beta=beta, threshold=threshold)
+    return std_w
 
 def sample_weights(W_mu, b_mu, W_p, b_p):
-    """Quick method for sampling weights and exporting weights"""
+    """Quick method for sampling weights and exporting weights
+    
+    Sampling W from N(W_mu, std_w^2) as follows:
+        eps_W ~ N(0, 1^2)
+        std_w = 1e-6 + log(1+exp(W_p)) (if W_p > 20, std_w = 1e-6 + W_p)
+        W = W_mu + 1 * std_w * eps_W
+
+    Sampling b from N(b_mu, std_b^2) as follows:
+        eps_b ~ N(0, 1^2)
+        std_b = 1e-6 + log(1+exp(b_p)) (if b_p > 20, std_w = 1e-6 + b_p)
+        b = b_mu + 1 * std_b * eps_b
+
+    This function samples b only if b_mu is not `None`
+    """
     eps_W = W_mu.data.new(W_mu.size()).normal_()
     # sample parameters
-    std_w = 1e-6 + F.softplus(W_p, beta=1, threshold=20)
+    std_w = w_to_std(W_p)
     W = W_mu + 1 * std_w * eps_W
 
     if b_mu is not None:
-        std_b = 1e-6 + F.softplus(b_p, beta=1, threshold=20)
+        std_b = w_to_std(b_p)
         eps_b = b_mu.data.new(b_mu.size()).normal_()
         b = b_mu + 1 * std_b * eps_b
     else:
@@ -45,36 +66,58 @@ class BayesLinear_Normalq(nn.Module):
         self.lqw = 0
 
     def forward(self, X, sample=False):
-        #         print(self.training)
+        """forward
 
-        if not self.training and not sample:  # When training return MLE of w for quick validation
+        Parameters
+        ----------
+        X : torch.tensor
+            Input
+        sample : bool, optional
+            Whether sample weights or not, by default False
+
+        Returns
+        -------
+        torch.tensor
+            Output
+        float 
+            log(q(sampled_weights)), where q is the variational posterior distribution.
+            0 if `sample=False`.
+        float 
+            log(p(sampled_weights)), where p is the prior distribution.
+            0 if `sample=False`.
+        """
+        # print(self.training)
+
+        if not self.training and not sample:  
+            # When training return MLE of w for quick validation
             output = torch.mm(X, self.W_mu) + self.b_mu.expand(X.size()[0], self.n_out)
             return output, 0, 0
 
         else:
-
             # Tensor.new()  Constructs a new tensor of the same data type as self tensor.
             # the same random sample is used for every element in the minibatch
             eps_W = Variable(self.W_mu.data.new(self.W_mu.size()).normal_())
             eps_b = Variable(self.b_mu.data.new(self.b_mu.size()).normal_())
 
             # sample parameters
-            std_w = 1e-6 + F.softplus(self.W_p, beta=1, threshold=20)
-            std_b = 1e-6 + F.softplus(self.b_p, beta=1, threshold=20)
+            std_w = w_to_std(self.W_p)
+            std_b = w_to_std(self.b_p)
 
             W = self.W_mu + 1 * std_w * eps_W
             b = self.b_mu + 1 * std_b * eps_b
 
             output = torch.mm(X, W) + b.unsqueeze(0).expand(X.shape[0], -1)  # (batch_size, n_output)
 
-            lqw = isotropic_gauss_loglike(W, self.W_mu, std_w) + isotropic_gauss_loglike(b, self.b_mu, std_b)
+            lqw = isotropic_gauss_loglike(W, self.W_mu, std_w) \
+                + isotropic_gauss_loglike(b, self.b_mu, std_b)
             lpw = self.prior.loglike(W) + self.prior.loglike(b)
             return output, lqw, lpw
 
-
-
 class bayes_linear_2L(nn.Module):
-    """2 hidden layer Bayes By Backprop (VI) Network"""
+    """2 hidden layer Bayes By Backprop (VI) Network
+    
+    x -> hidden -> hidden -> out
+    """
     def __init__(self, input_dim, output_dim, n_hid, prior_instance):
         super(bayes_linear_2L, self).__init__()
 
@@ -98,31 +141,72 @@ class bayes_linear_2L(nn.Module):
         # self.act = nn.SELU(inplace=True)
 
     def forward(self, x, sample=False):
+        """forward
+
+        Parameters
+        ----------
+        x : torch.tensor
+            Input.
+        sample : bool, optional
+            Whether sample weights or not, by default False
+
+        Returns
+        -------
+        torch.tensor
+            Output.
+        float
+            total log(q(theta)), where q is the variational posterior distribution.
+            0 if `sample=False`.
+        float
+            total log(p(theta)), where p is the prior distribution.
+            0 of `sample=False`.
+        """
         tlqw = 0
         tlpw = 0
 
         x = x.view(-1, self.input_dim)  # view(batch_size, input_dim)
         # -----------------
         x, lqw, lpw = self.bfc1(x, sample)
-        tlqw = tlqw + lqw
-        tlpw = tlpw + lpw
+        tlqw += lqw
+        tlpw += lpw
         # -----------------
         x = self.act(x)
         # -----------------
         x, lqw, lpw = self.bfc2(x, sample)
-        tlqw = tlqw + lqw
-        tlpw = tlpw + lpw
+        tlqw += lqw
+        tlpw += lpw
         # -----------------
         x = self.act(x)
         # -----------------
         y, lqw, lpw = self.bfc3(x, sample)
-        tlqw = tlqw + lqw
-        tlpw = tlpw + lpw
+        tlqw += lqw
+        tlpw += lpw
 
         return y, tlqw, tlpw
 
     def sample_predict(self, x, Nsamples):
-        """Used for estimating the data's likelihood by approximately marginalising the weights with MC"""
+        """Sample predicted outputs from the network.
+        
+        Used for estimating the data's likelihood by approximately marginalising 
+        the weights with MC
+
+        Parameters
+        ----------
+        x : torch.tensor
+            Input.
+        Nsamples : int
+            Sample size for MC approximation
+
+        Returns
+        -------
+        torch.tensor
+            Predicted output.        
+        list
+            Vector consists of tlqw for each samples
+        list
+            Vector consists of tlpw for each samples
+        """
+
         # Just copies type from x, initializes new vector
         predictions = x.data.new(Nsamples, x.shape[0], self.output_dim)
         tlqw_vec = np.zeros(Nsamples)
@@ -137,13 +221,38 @@ class bayes_linear_2L(nn.Module):
         return predictions, tlqw_vec, tlpw_vec
 
 class BBP_Bayes_Net(BaseNet):
-    """Full network wrapper for Bayes By Backprop nets with methods for training, prediction and weight prunning"""
+    """Bayes By Backporp nets for classfication
+    
+    Full network wrapper for Bayes By Backprop nets with methods for training, 
+    prediction and weight prunning
+
+    Attributes
+    ----------
+    lr : float
+        Learning rates for optimizer.
+    channels_in : int
+    side_in : int
+    cuda : bool, optional
+        Whether use gpu or not.
+    classes : int
+        The number of classes of output.
+    batch_size : int
+        Batch size.
+    Nbatches : int
+    nhid : int
+        The number of nodes for each hidden layers.
+    prior_instance : object
+        prior distribution.
+    """
     eps = 1e-6
 
-    def __init__(self, lr=1e-3, channels_in=3, side_in=28, cuda=True, classes=10, batch_size=128, Nbatches=0,
-                 nhid=1200, prior_instance=laplace_prior(mu=0, b=0.1)):
+    def __init__(
+        self, lr=1e-3, channels_in=3, side_in=28, cuda=True, 
+        classes=10, batch_size=128, Nbatches=0,
+        nhid=1200, prior_instance=laplace_prior(mu=0, b=0.1)
+    ):
         super(BBP_Bayes_Net, self).__init__()
-        cprint('y', ' Creating Net!! ')
+        cprint('y', '  Creating Net!! ')
         self.lr = lr
         self.schedule = None  # [] #[50,200,400,600]
         self.cuda = cuda
@@ -160,28 +269,70 @@ class BBP_Bayes_Net(BaseNet):
 
         self.test = False
 
-    def create_net(self):
-        torch.manual_seed(42)
-        if self.cuda:
-            torch.cuda.manual_seed(42)
+    def create_net(self, set_seed=42):
+        """create network
 
-        self.model = bayes_linear_2L(input_dim=self.channels_in * self.side_in * self.side_in,
-                                     output_dim=self.classes, n_hid=self.nhid, prior_instance=self.prior_instance)
+        Parameters
+        ----------
+        set_seed : int, optional
+            Random seed, by default 42.
+        """
+        torch.manual_seed(set_seed)
+        if self.cuda:
+            torch.cuda.manual_seed(set_seed)
+
+        self.model = bayes_linear_2L(
+            input_dim=self.channels_in * self.side_in * self.side_in,
+            output_dim=self.classes, 
+            n_hid=self.nhid, 
+            prior_instance=self.prior_instance)
         if self.cuda:
             self.model.cuda()
         #             cudnn.benchmark = True
+        tot_nb_parameters = self.get_nb_parameters()
 
-        print('    Total params: %.2fM' % (self.get_nb_parameters() / 1000000.0))
+        if tot_nb_parameters < 1e3:
+            print('    Total params: %f' % (tot_nb_parameters)) 
+        elif tot_nb_parameters < 1e6:
+            print('    Total params: %.2fK' % (tot_nb_parameters / 1e3)) 
+        else:
+            print('    Total params: %.2fM' % (tot_nb_parameters / 1e6))
 
     def create_opt(self):
-        #         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr, betas=(0.9, 0.999), eps=1e-08,
-        #                                           weight_decay=0)
+        """create optimizer
+
+        Use SGD optimizer with `lr=self.lr`, `momentum=0`
+        """
+        # self.optimizer = torch.optim.Adam(
+        #     self.model.parameters(), lr=self.lr, 
+        #     betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
         self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.lr, momentum=0)
 
-    #         self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.lr, momentum=0.9)
-    #         self.sched = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=1, gamma=10, last_epoch=-1)
+        # self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.lr, momentum=0.9)
+        # self.sched = torch.optim.lr_scheduler.StepLR(
+        #     self.optimizer, step_size=1, gamma=10, last_epoch=-1)
 
     def fit(self, x, y, samples=1):
+        """fitting model
+
+        Parameters
+        ----------
+        x : torch.tensor
+            Input.
+        y : torch.tensor
+            Output.
+        samples : int, optional
+            Sample size, by default 1
+
+        Returns
+        -------
+        float
+            complexity = log(q(theta)) - log(p(theta)) 
+        float
+            negative-loglikelihood
+        float
+            accuracy
+        """
         x, y = to_variable(var=(x, y.long()), cuda=self.cuda)
 
         self.optimizer.zero_grad()
@@ -199,8 +350,8 @@ class BBP_Bayes_Net(BaseNet):
                 out, tlqw, tlpw = self.model(x, sample=True)
                 mlpdw_i = F.cross_entropy(out, y, reduction='sum')
                 Edkl_i = (tlqw - tlpw) / self.Nbatches
-                mlpdw_cum = mlpdw_cum + mlpdw_i
-                Edkl_cum = Edkl_cum + Edkl_i
+                mlpdw_cum += mlpdw_i
+                Edkl_cum += Edkl_i
 
             mlpdw = mlpdw_cum / samples
             Edkl = Edkl_cum / samples
@@ -211,17 +362,35 @@ class BBP_Bayes_Net(BaseNet):
 
         # out: (batch_size, out_channels, out_caps_dims)
         pred = out.data.max(dim=1, keepdim=False)[1]  # get the index of the max log-probability
-        err = pred.ne(y.data).sum()
+        err = pred.ne(y.data).sum() # accuracy
 
         return Edkl.data, mlpdw.data, err
 
     def eval(self, x, y, train=False):
+        """eval
+
+        Parameters
+        ----------
+        x : torch.tensor
+            Input.
+        y : torch.tensor
+            Target.
+        train : bool, optional
+            Whether the network is training or not, by default False
+
+        Returns
+        -------
+        float
+            loss = complexity + negative-loglikelihood
+        float
+            accuracy
+        torch.tensor
+            probabilities for clasfication
+        """
         x, y = to_variable(var=(x, y.long()), cuda=self.cuda)
 
         out, _, _ = self.model(x)
-
         loss = F.cross_entropy(out, y, reduction='sum')
-
         probs = F.softmax(out, dim=1).data.cpu()
 
         pred = out.data.max(dim=1, keepdim=False)[1]  # get the index of the max log-probability
@@ -230,7 +399,29 @@ class BBP_Bayes_Net(BaseNet):
         return loss.data, err, probs
 
     def sample_eval(self, x, y, Nsamples, logits=True, train=False):
-        """Prediction, only returining result with weights marginalised"""
+        """Prediction, only returining result with weights marginalised
+
+        Parameters
+        ----------
+        x : torch.tensor
+            Input.
+        y : torch.tensor
+            Target.
+        Nsamples : int
+            Sample size.
+        logits : bool, optional
+        train : bool, optional
+            Whether the network is training or not, by default False
+
+        Returns
+        -------
+        float
+            loss = complexity + negative-loglikelihood
+        float
+            accuracy
+        torch.tensor
+            probabilities for clasfication
+        """
         x, y = to_variable(var=(x, y.long()), cuda=self.cuda)
 
         out, _, _ = self.model.sample_predict(x, Nsamples)
@@ -276,9 +467,8 @@ class BBP_Bayes_Net(BaseNet):
 
                     W_mu = state_dict[layer_name + '.W_mu'].data
                     W_p = state_dict[layer_name + '.W_p'].data
-
-                    #                 b_mu = state_dict[layer_name+'.b_mu'].cpu().data
-                    #                 b_p = state_dict[layer_name+'.b_p'].cpu().data
+                    # b_mu = state_dict[layer_name+'.b_mu'].cpu().data
+                    # b_p = state_dict[layer_name+'.b_p'].cpu().data
 
                     W, b = sample_weights(W_mu=W_mu, b_mu=None, W_p=W_p, b_p=None)
 
@@ -302,11 +492,11 @@ class BBP_Bayes_Net(BaseNet):
 
                 W_mu = state_dict[layer_name + '.W_mu'].data
                 W_p = state_dict[layer_name + '.W_p'].data
-                sig_W = 1e-6 + F.softplus(W_p, beta=1, threshold=20)
+                sig_W = w_to_std(W_p)
 
                 b_mu = state_dict[layer_name + '.b_mu'].data
                 b_p = state_dict[layer_name + '.b_p'].data
-                sig_b = 1e-6 + F.softplus(b_p, beta=1, threshold=20)
+                sig_b = w_to_std(b_p)
 
                 W_snr = (torch.abs(W_mu) / sig_W)
                 b_snr = (torch.abs(b_mu) / sig_b)
@@ -346,20 +536,18 @@ class BBP_Bayes_Net(BaseNet):
                 b_mu = state_dict[layer_name + '.b_mu'].data
                 b_p = state_dict[layer_name + '.b_p'].data
 
-                std_w = 1e-6 + F.softplus(W_p, beta=1, threshold=20)
-                std_b = 1e-6 + F.softplus(b_p, beta=1, threshold=20)
+                std_w = w_to_std(W_p)
+                std_b = w_to_std(b_p)
 
                 KL_W = W_mu.new(W_mu.size()).zero_()
                 KL_b = b_mu.new(b_mu.size()).zero_()
                 for i in range(Nsamples):
                     W, b = sample_weights(W_mu=W_mu, b_mu=b_mu, W_p=W_p, b_p=b_p)
                     # Note that this will currently not work with slab and spike prior
-                    KL_W += isotropic_gauss_loglike(W, W_mu, std_w,
-                                                    do_sum=False) - self.model.prior_instance.loglike(W,
-                                                                                                      do_sum=False)
-                    KL_b += isotropic_gauss_loglike(b, b_mu, std_b,
-                                                    do_sum=False) - self.model.prior_instance.loglike(b,
-                                                                                                      do_sum=False)
+                    KL_W += isotropic_gauss_loglike(W, W_mu, std_w, do_sum=False) \
+                        - self.model.prior_instance.loglike(W, do_sum=False)
+                    KL_b += isotropic_gauss_loglike(b, b_mu, std_b, do_sum=False) \
+                        - self.model.prior_instance.loglike(b, do_sum=False)
 
                 KL_W /= Nsamples
                 KL_b /= Nsamples
@@ -369,10 +557,8 @@ class BBP_Bayes_Net(BaseNet):
                     mask_dict[layer_name + '.b'] = KL_b > thresh
 
                 else:
-
                     for weight_KLD in KL_W.cpu().view(-1):
                         weight_KLD_vec.append(weight_KLD)
-
                     for weight_KLD in KL_b.cpu().view(-1):
                         weight_KLD_vec.append(weight_KLD)
 
@@ -411,5 +597,3 @@ class BBP_Bayes_Net(BaseNet):
                 n_unmasked += mask_dict[layer_name + '.b'].sum()
 
         return original_state_dict, n_unmasked
-
-
