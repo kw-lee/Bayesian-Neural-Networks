@@ -838,6 +838,37 @@ class BBP_Bayes_RegNet(BBP_Bayes_Net):
 
         return Edkl.data, mlpdw.data, loss.data
 
+    def sample(self, x, train=False, onlydata=False):
+        """eval
+
+        Parameters
+        ----------
+        x : torch.tensor
+            Input.
+        train : bool, optional
+            Whether the network is training or not, by default False
+        onlydata : bool, optional
+            Whether get the data only or not, by default False.
+
+        Returns
+        -------
+        torch.tensor
+            predicted mean
+        torch.tensor
+            predicted sigma
+        """
+        y = torch.zeros(1)
+        x, y = to_variable(var=(x, y.long()), cuda=self.cuda)
+
+        out, _, _ = self.model(x)
+        pred_mean = out[:, :self.output_dim]
+        pred_sigma = w_to_std(out[:, self.output_dim:])
+        
+        if onlydata:
+            return pred_mean.data, pred_sigma.data
+        else:
+            return pred_mean, pred_sigma
+
     def eval(self, x, y, train=False):
         """eval
 
@@ -861,9 +892,7 @@ class BBP_Bayes_RegNet(BBP_Bayes_Net):
         """
         x, y = to_variable(var=(x, y.long()), cuda=self.cuda)
 
-        out, _, _ = self.model(x)
-        pred_mean = out[:, :self.output_dim]
-        pred_sigma = w_to_std(out[:, self.output_dim:])
+        pred_mean, pred_sigma = self.sample(x)
 
         loss = -isotropic_gauss_loglike(
             y, mu=pred_mean, sigma=pred_sigma, do_sum=True)
