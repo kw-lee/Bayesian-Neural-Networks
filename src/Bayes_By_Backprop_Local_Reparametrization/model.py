@@ -1,6 +1,4 @@
 from src.priors import isotropic_gauss_prior
-from src.priors import *
-from src.base_net import *
 from src.Bayes_By_Backprop.model \
     import w_to_std, BayesLinear_Normalq, BBP_Bayes_Net 
 import torch.nn as nn

@@ -134,14 +134,14 @@ class DatafeedImage(data.Dataset):
         return len(self.x_train)
 
 
-### functions for BNN with gauss output: ###
+# functions for BNN with gauss output: ###
 
 def diagonal_gauss_loglike(x, mu, sigma):
     # note that we can just treat each dim as isotropic and then do sum
-    cte_term = -(0.5)*np.log(2*np.pi)
+    cte_term = -(0.5) * np.log(2 * np.pi)
     det_sig_term = -torch.log(sigma)
-    inner = (x - mu)/sigma
-    dist_term = -(0.5)*(inner**2)
+    inner = (x - mu) / sigma
+    dist_term = -(0.5) * (inner**2)
     log_px = (cte_term + det_sig_term + dist_term).sum(dim=1, keepdim=False)
     return log_px
 

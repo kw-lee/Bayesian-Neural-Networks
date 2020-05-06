@@ -1,4 +1,3 @@
-from src.priors import *
 from src.base_net import BaseNet
 
 import numpy as np
@@ -362,7 +361,7 @@ class BBP_Bayes_Net(BaseNet):
 
         # out: (batch_size, out_channels, out_caps_dims)
         pred = out.data.max(dim=1, keepdim=False)[1]  # get the index of the max log-probability
-        err = pred.ne(y.data).sum() # accuracy
+        err = pred.ne(y.data).sum()  # accuracy
 
         return Edkl.data, mlpdw.data, err
 
