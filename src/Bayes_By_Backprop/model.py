@@ -56,11 +56,11 @@ class BayesLinear_Normalq(nn.Module):
         self.prior = prior_class
 
         # Learnable parameters -> Initialisation is set empirically.
-        self.W_mu = nn.Parameter(torch.Tensor(self.n_in, self.n_out).uniform_(-0.1, 0.1))
-        self.W_p = nn.Parameter(torch.Tensor(self.n_in, self.n_out).uniform_(-3, -2))
+        self.W_mu = nn.Parameter(torch.Tensor(self.n_in, self.n_out).uniform_(-0.01, 0.01))
+        self.W_p = nn.Parameter(torch.Tensor(self.n_in, self.n_out).uniform_(-4, -3))
 
-        self.b_mu = nn.Parameter(torch.Tensor(self.n_out).uniform_(-0.1, 0.1))
-        self.b_p = nn.Parameter(torch.Tensor(self.n_out).uniform_(-3, -2))
+        self.b_mu = nn.Parameter(torch.Tensor(self.n_out).uniform_(-0.01, 0.01))
+        self.b_p = nn.Parameter(torch.Tensor(self.n_out).uniform_(-4, -3))
 
         self.lpw = 0
         self.lqw = 0
