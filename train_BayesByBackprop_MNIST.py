@@ -6,6 +6,7 @@ import argparse
 import matplotlib
 from src.Bayes_By_Backprop.model import *
 from src.Bayes_By_Backprop_Local_Reparametrization.model import *
+from os import mkdir
 
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
