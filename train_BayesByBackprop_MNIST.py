@@ -44,7 +44,7 @@ results_dir = args.results_dir
 
 mkdir(models_dir)
 mkdir(results_dir)
-# ------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # train config
 NTrainPointsMNIST = 60000
 batch_size = 100
@@ -52,12 +52,12 @@ nb_epochs = args.epochs
 log_interval = 1
 
 
-# ------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # dataset
+
 utils.cprint('c', '\nData:')
 
 # load data
-
 # data augmentation
 transform_train = transforms.Compose([
     transforms.ToTensor(),
@@ -87,13 +87,12 @@ else:
     valloader = torch.utils.data.DataLoader(
         valset, batch_size=batch_size, shuffle=False, pin_memory=False, num_workers=n_workers)
 
-# ---------------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # net dims
 utils.cprint('c', '\nNetwork:')
 
 lr = args.lr
 nsamples = int(args.n_samples)  # How many samples to estimate ELBO with at each iteration
-########################################################################################
 
 n_hid = int(args.n_hid)
 
@@ -122,7 +121,7 @@ else:
     print('Invalid model type')
     exit(1)
 
-# ---------------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # train
 epoch = 0
 utils.cprint('c', '\nTrain:')
@@ -196,7 +195,8 @@ utils.cprint('r', '   average time: %f seconds\n' % runtime_per_it)
 
 net.save(models_dir + '/theta_last.dat')
 
-# -------------------------------------------------------------------------------------------------------# results
+# -----------------------------------------------------------------------------
+#  results
 utils.cprint('c', '\nRESULTS:')
 nb_parameters = net.get_nb_parameters()
 best_cost_dev = np.min(cost_dev)
@@ -216,7 +216,7 @@ np.save(results_dir + '/cost_dev.npy', cost_dev)
 np.save(results_dir + '/err_train.npy', err_train)
 np.save(results_dir + '/err_dev.npy', err_dev)
 
-# --------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # fig cost vs its
 
 textsize = 15
@@ -247,8 +247,7 @@ plt.grid(b=True, which='major', color='k', linestyle='-')
 plt.grid(b=True, which='minor', color='k', linestyle='--')
 ax = plt.gca()
 plt.title('DKL (per sample)')
-for item in ([ax.title, ax.xaxis.label, ax.yaxis.label] +
-             ax.get_xticklabels() + ax.get_yticklabels()):
+for item in ([ax.title, ax.xaxis.label, ax.yaxis.label] + ax.get_xticklabels() + ax.get_yticklabels()):
     item.set_fontsize(textsize)
     item.set_weight('normal')
 plt.savefig(results_dir + '/KL_cost.png', bbox_extra_artists=(lgd,), bbox_inches='tight')
@@ -265,8 +264,7 @@ ax2.get_yaxis().set_minor_formatter(matplotlib.ticker.ScalarFormatter())
 ax2.get_yaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
 lgd = plt.legend(['test error', 'train error'], markerscale=marker, prop={'size': textsize, 'weight': 'normal'})
 ax = plt.gca()
-for item in ([ax.title, ax.xaxis.label, ax.yaxis.label] +
-             ax.get_xticklabels() + ax.get_yticklabels()):
+for item in ([ax.title, ax.xaxis.label, ax.yaxis.label] + ax.get_xticklabels() + ax.get_yticklabels()):
     item.set_fontsize(textsize)
     item.set_weight('normal')
 plt.savefig(results_dir + '/err.png', bbox_extra_artists=(lgd,), box_inches='tight')

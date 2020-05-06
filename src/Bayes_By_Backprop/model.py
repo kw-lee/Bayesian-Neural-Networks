@@ -9,8 +9,10 @@ import copy
 from src.utils import cprint, to_variable
 from src.priors import isotropic_gauss_loglike, laplace_prior
 
+EPS = 1e-6
+
 def w_to_std(w, beta=1, threshold=20):
-    std_w = 1e-6 + F.softplus(w, beta=beta, threshold=threshold)
+    std_w = EPS + F.softplus(w, beta=beta, threshold=threshold)
     return std_w
 
 def sample_weights(W_mu, b_mu, W_p, b_p):
@@ -41,7 +43,6 @@ def sample_weights(W_mu, b_mu, W_p, b_p):
         b = None
 
     return W, b
-
 
 class BayesLinear_Normalq(nn.Module):
     """Linear Layer where weights are sampled from a fully factorised Normal with learnable parameters. The likelihood
@@ -219,6 +220,124 @@ class BayesLinear2L(nn.Module):
 
         return predictions, tlqw_vec, tlpw_vec
 
+class BayesLinear2L2(nn.Module):
+    """2 hidden layer Bayes By Backprop (VI) Network with 2 output layers
+    
+    x -> hidden -> hidden -> out1
+      |
+      -> hidden -> hidden -> out2
+    """
+    def __init__(
+        self, input_dim, output_dim, n_hid, prior_instance,
+        n_hid1=None, n_hid2=None, 
+        prior_instance1=None, prior_instance2=None
+    ):
+        super(BayesLinear2L2, self).__init__()
+
+        if n_hid1 is None:
+            self.n_hid1 = n_hid
+        else:
+            self.n_hid1 = n_hid1
+        
+        if n_hid2 is None:
+            self.n_hid2 = n_hid
+        else:
+            self.n_hid2 = n_hid2
+        
+        if prior_instance1 is None:
+            self.prior_instance1 = prior_instance
+        else:
+            self.prior_instance1 = prior_instance1
+
+        if prior_instance2 is None:
+            self.prior_instance2 = prior_instance
+        else:
+            self.prior_instance2 = prior_instance2
+
+        self.input_dim = input_dim
+        self.output_dim = output_dim        
+
+        self.layer1 = BayesLinear2L(
+            self.input_dim, self.output_dim, self.n_hid1, self.prior_instance1)
+        self.layer2 = BayesLinear2L(
+            self.input_dim, self.output_dim, self.n_hid2, self.prior_instance2)
+
+    def forward(self, x, sample=False):
+        """forward
+
+        Parameters
+        ----------
+        x : torch.tensor
+            Input.
+        sample : bool, optional
+            Whether sample weights or not, by default False
+
+        Returns
+        -------
+        torch.tensor
+            Output.
+        float
+            total log(q(theta)), where q is the variational posterior distribution.
+            0 if `sample=False`.
+        float
+            total log(p(theta)), where p is the prior distribution.
+            0 of `sample=False`.
+        """
+        tlqw = 0
+        tlpw = 0
+
+        x = x.view(-1, self.input_dim)  # view(batch_size, input_dim)
+        # -----------------
+        out1, lqw, lpw = self.layer1(x)
+        tlqw += lqw
+        tlpw += lpw
+
+        # ------------------
+        out2, lqw, lpw = self.layer2(x)
+        tlqw += lqw
+        tlpw += lpw
+
+        out = torch.cat((out1, out2), 1)
+
+        return out, tlqw, tlpw
+
+    def sample_predict(self, x, Nsamples):
+        """Sample predicted outputs from the network.
+        
+        Used for estimating the data's likelihood by approximately marginalising 
+        the weights with MC
+
+        Parameters
+        ----------
+        x : torch.tensor
+            Input.
+        Nsamples : int
+            Sample size for MC approximation
+
+        Returns
+        -------
+        torch.tensor
+            Predicted output.        
+        list
+            Vector consists of tlqw for each samples
+        list
+            Vector consists of tlpw for each samples
+        """
+
+        # Just copies type from x, initializes new vector
+        predictions = x.data.new(Nsamples, x.shape[0], 2 * self.output_dim)
+        tlqw_vec = np.zeros(Nsamples)
+        tlpw_vec = np.zeros(Nsamples)
+
+        for i in range(Nsamples):
+            y, tlqw, tlpw = self.forward(x, sample=True)
+            predictions[i] = y
+            tlqw_vec[i] = tlqw
+            tlpw_vec[i] = tlpw
+
+        return predictions, tlqw_vec, tlpw_vec
+
+# todo: classfication 전용 network, BaseNetwork로 분리해야함 
 class BBP_Bayes_Net(BaseNet):
     """Bayes By Backporp nets for classfication
     
@@ -229,12 +348,16 @@ class BBP_Bayes_Net(BaseNet):
     ----------
     lr : float
         Learning rates for optimizer.
+    input_dim : int
     channels_in : int
+        only if `input_dim=None`
     side_in : int
+        only if `input_dim=None`
     cuda : bool, optional
         Whether use gpu or not.
+    output_dim : int
     classes : int
-        The number of classes of output.
+        The number of classes of output, only if `output_dim=None`
     batch_size : int
         Batch size.
     Nbatches : int
@@ -243,11 +366,9 @@ class BBP_Bayes_Net(BaseNet):
     prior_instance : object
         prior distribution.
     """
-    eps = 1e-6
-
     def __init__(
-        self, lr=1e-3, channels_in=3, side_in=28, cuda=True, 
-        classes=10, batch_size=128, Nbatches=0,
+        self, lr=1e-3, input_dim=None, channels_in=3, side_in=28, cuda=True, 
+        output_dim=None, classes=10, batch_size=128, Nbatches=0,
         n_hid=1200, prior_instance=laplace_prior(mu=0, b=0.1)
     ):
         super(BBP_Bayes_Net, self).__init__()
@@ -255,13 +376,19 @@ class BBP_Bayes_Net(BaseNet):
         self.lr = lr
         self.schedule = None  # [] #[50,200,400,600]
         self.cuda = cuda
-        self.channels_in = channels_in
-        self.classes = classes
+        self.input_dim = input_dim
+        if input_dim is None:
+            self.channels_in = channels_in
+            self.side_in = side_in
+            self.input_dim = channels_in * side_in * side_in
+        self.output_dim = output_dim
+        if output_dim is None:
+            self.classes = classes
+            self.output_dim = classes
         self.batch_size = batch_size
         self.Nbatches = Nbatches
         self.prior_instance = prior_instance
         self.n_hid = n_hid
-        self.side_in = side_in
         self.create_net()
         self.create_opt()
         self.epoch = 0
@@ -281,8 +408,8 @@ class BBP_Bayes_Net(BaseNet):
             torch.cuda.manual_seed(set_seed)
 
         self.model = BayesLinear2L(
-            input_dim=self.channels_in * self.side_in * self.side_in,
-            output_dim=self.classes, 
+            input_dim=self.input_dim,
+            output_dim=self.output_dim, 
             n_hid=self.n_hid, 
             prior_instance=self.prior_instance)
         if self.cuda:
@@ -596,3 +723,189 @@ class BBP_Bayes_Net(BaseNet):
                 n_unmasked += mask_dict[layer_name + '.b'].sum()
 
         return original_state_dict, n_unmasked
+
+class BBP_Bayes_RegNet(BBP_Bayes_Net):
+    """Bayes By Backporp nets for regression
+    
+    Full network wrapper for Bayes By Backprop nets with methods for training, 
+    prediction and weight prunning
+
+    Attributes
+    ----------
+    lr : float
+        Learning rates for optimizer.
+    input_dim : int
+    channels_in : int
+        only if `input_dim=None`
+    side_in : int
+        only if `input_dim=None`
+    cuda : bool, optional
+        Whether use gpu or not.
+    output_dim : int
+    classes : int
+        The number of classes of output, only if `output_dim=None`
+    batch_size : int
+        Batch size.
+    Nbatches : int
+    n_hid : int
+        The number of nodes for each hidden layers.
+    prior_instance : object
+        prior distribution.
+    """
+    def __init__(self, **kwargs):
+        super(BBP_Bayes_RegNet, self).__init__(n_hid=10, **kwargs)
+    
+    def create_net(self, set_seed=42):
+        """create network
+
+        Parameters
+        ----------
+        set_seed : int, optional
+            Random seed, by default 42.
+        """
+        torch.manual_seed(set_seed)
+        if self.cuda:
+            torch.cuda.manual_seed(set_seed)
+
+        self.model = BayesLinear2L2(
+            input_dim=self.input_dim,
+            output_dim=self.output_dim, 
+            n_hid=self.n_hid, 
+            prior_instance=self.prior_instance)
+        if self.cuda:
+            self.model.cuda()
+        tot_nb_parameters = self.get_nb_parameters()
+
+        if tot_nb_parameters < 1e3:
+            print('    Total params: %f' % (tot_nb_parameters)) 
+        elif tot_nb_parameters < 1e6:
+            print('    Total params: %.2fK' % (tot_nb_parameters / 1e3)) 
+        else:
+            print('    Total params: %.2fM' % (tot_nb_parameters / 1e6))
+
+    def fit(self, x, y, samples=1):
+        """fitting model
+
+        Parameters
+        ----------
+        x : torch.tensor
+            Input.
+        y : torch.tensor
+            Output.
+        samples : int, optional
+            Sample size, by default 1
+
+        Returns
+        -------
+        float
+            complexity = log(q(theta)) - log(p(theta)) 
+        float
+            negative-loglikelihood
+        float
+            loss = complexity + negative-loglikelihood
+        """
+        x, y = to_variable(var=(x, y.long()), cuda=self.cuda)
+
+        self.optimizer.zero_grad()
+
+        if samples == 1:
+            out, tlqw, tlpw = self.model(x)
+            mlpdw = -isotropic_gauss_loglike(
+                y, 
+                mu=out[:, :self.output_dim], 
+                sigma=w_to_std(out[:, self.output_dim:]), 
+                do_sum=True)
+            Edkl = (tlqw - tlpw) / self.Nbatches
+        elif samples > 1:
+            mlpdw_cum = 0
+            Edkl_cum = 0
+            for i in range(samples):
+                out, tlqw, tlpw = self.model(x, sample=True)
+                mlpdw_i = -isotropic_gauss_loglike(
+                    y, 
+                    mu=out[:, :self.output_dim], 
+                    sigma=w_to_std(out[:, self.output_dim:]), 
+                    do_sum=True)
+                Edkl_i = (tlqw - tlpw) / self.Nbatches
+                mlpdw_cum += mlpdw_i
+                Edkl_cum += Edkl_i
+            mlpdw = mlpdw_cum / samples
+            Edkl = Edkl_cum / samples
+
+        loss = Edkl + mlpdw
+        loss.backward()
+        self.optimizer.step()
+
+        return Edkl.data, mlpdw.data, loss.data
+
+    def eval(self, x, y, train=False):
+        """eval
+
+        Parameters
+        ----------
+        x : torch.tensor
+            Input.
+        y : torch.tensor
+            Target.
+        train : bool, optional
+            Whether the network is training or not, by default False
+
+        Returns
+        -------
+        float
+            loss = complexity + negative-loglikelihood
+        torch.tensor
+            predicted mean
+        torch.tensor
+            predicted sigma
+        """
+        x, y = to_variable(var=(x, y.long()), cuda=self.cuda)
+
+        out, _, _ = self.model(x)
+        pred_mean = out[:, :self.output_dim]
+        pred_sigma = w_to_std(out[:, self.output_dim:])
+
+        loss = -isotropic_gauss_loglike(
+            y, mu=pred_mean, sigma=pred_sigma, do_sum=True)
+
+        return loss.data, pred_mean.data, pred_sigma.data
+
+    def sample_eval(self, x, y, Nsamples, train=False):
+        """Prediction, only returining result with weights marginalised
+
+        Parameters
+        ----------
+        x : torch.tensor
+            Input.
+        y : torch.tensor
+            Target.
+        Nsamples : int
+            Sample size.
+        train : bool, optional
+            Whether the network is training or not, by default False
+
+        Returns
+        -------
+        float
+            loss = complexity + negative-loglikelihood
+        float
+            accuracy
+        torch.tensor
+            probabilities for clasfication
+        """
+        x, y = to_variable(var=(x, y.long()), cuda=self.cuda)
+
+        out, _, _ = self.model.sample_predict(x, Nsamples)
+
+        pred_mean = out[:, :, :self.output_dim]
+        pred_sigma = w_to_std(out[:, :, self.output_dim:])
+
+        mean_pred_mean = pred_mean.mean(dim=0, keepdim=False)
+        mean_pred_sigma = pred_sigma.mean(dim=0, keepdim=False)
+        loss = -isotropic_gauss_loglike(
+            y, mu=mean_pred_mean, sigma=mean_pred_sigma, do_sum=True)
+
+        return loss.data, mean_pred_mean, mean_pred_sigma
+
+    def all_sample_eval(self, x, y, Nsamples):
+        return 0
