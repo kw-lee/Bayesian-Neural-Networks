@@ -27,6 +27,10 @@ parser.add_argument('--models_dir', type=str, nargs='?', action='store', default
                     help='Where to save learnt weights and train vectors. Default: \'BBP_models\'.')
 parser.add_argument('--results_dir', type=str, nargs='?', action='store', default='BBP_results',
                     help='Where to save learnt training plots. Default: \'BBP_results\'.')
+parser.add_argument('--n_workers', type=int, nargs='?', action='store', default=3,
+                    help='How many workers to train model. Default: 3.')
+parser.add_argument('--n_hid', type=int, nargs='?', action='store', default=1200,
+                    help='How many nodes in hidden layer. Default: 1200.')
 args = parser.parse_args()
 
 
@@ -68,17 +72,18 @@ use_cuda = torch.cuda.is_available()
 trainset = datasets.MNIST(root='../data', train=True, download=True, transform=transform_train)
 valset = datasets.MNIST(root='../data', train=False, download=True, transform=transform_test)
 
+n_workers = int(args.n_workers)
 if use_cuda:
-    trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, pin_memory=True,
-                                              num_workers=3)
-    valloader = torch.utils.data.DataLoader(valset, batch_size=batch_size, shuffle=False, pin_memory=True,
-                                            num_workers=3)
+    trainloader = torch.utils.data.DataLoader(
+        trainset, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=n_workers)
+    valloader = torch.utils.data.DataLoader(
+        valset, batch_size=batch_size, shuffle=False, pin_memory=True, num_workers=n_workers)
 
 else:
-    trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, pin_memory=False,
-                                              num_workers=3)
-    valloader = torch.utils.data.DataLoader(valset, batch_size=batch_size, shuffle=False, pin_memory=False,
-                                            num_workers=3)
+    trainloader = torch.utils.data.DataLoader(
+        trainset, batch_size=batch_size, shuffle=True, pin_memory=False, num_workers=n_workers)
+    valloader = torch.utils.data.DataLoader(
+        valset, batch_size=batch_size, shuffle=False, pin_memory=False, num_workers=n_workers)
 
 ## ---------------------------------------------------------------------------------------------------------------------
 # net dims
@@ -88,20 +93,22 @@ lr = args.lr
 nsamples = int(args.n_samples)  # How many samples to estimate ELBO with at each iteration
 ########################################################################################
 
+n_hid = int(args.n_hid)
+
 if args.model == 'Local_Reparam':
     net = BBP_Bayes_Net_LR(lr=lr, channels_in=1, side_in=28, cuda=use_cuda, classes=10, batch_size=batch_size,
-                     Nbatches=(NTrainPointsMNIST / batch_size), nhid=1200, prior_sig=args.prior_sig)
+                     Nbatches=(NTrainPointsMNIST / batch_size), nhid=n_hid, prior_sig=args.prior_sig)
 elif args.model == 'Laplace_prior':
     net = BBP_Bayes_Net(lr=lr, channels_in=1, side_in=28, cuda=use_cuda, classes=10, batch_size=batch_size,
-                        Nbatches=(NTrainPointsMNIST / batch_size), nhid=1200,
+                        Nbatches=(NTrainPointsMNIST / batch_size), nhid=n_hid,
                         prior_instance=laplace_prior(mu=0, b=args.prior_sig))
 elif args.model == 'Gaussian_prior':
     net = BBP_Bayes_Net(lr=lr, channels_in=1, side_in=28, cuda=use_cuda, classes=10, batch_size=batch_size,
-                        Nbatches=(NTrainPointsMNIST / batch_size), nhid=1200,
+                        Nbatches=(NTrainPointsMNIST / batch_size), nhid=n_hid,
                         prior_instance=isotropic_gauss_prior(mu=0, sigma=args.prior_sig))
 elif args.model == 'GMM_prior':
     net = BBP_Bayes_Net(lr=lr, channels_in=1, side_in=28, cuda=use_cuda, classes=10, batch_size=batch_size,
-                        Nbatches=(NTrainPointsMNIST / batch_size), nhid=1200,
+                        Nbatches=(NTrainPointsMNIST / batch_size), nhid=n_hid,
                         prior_instance=spike_slab_2GMM(mu1=0, mu2=0, sigma1=args.prior_sig, sigma2=0.0005, pi=0.75))
 else:
     print('Invalid model type')
