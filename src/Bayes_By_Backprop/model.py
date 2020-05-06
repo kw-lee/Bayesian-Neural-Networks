@@ -752,8 +752,8 @@ class BBP_Bayes_RegNet(BBP_Bayes_Net):
     prior_instance : object
         prior distribution.
     """
-    def __init__(self, **kwargs):
-        super(BBP_Bayes_RegNet, self).__init__(n_hid=10, **kwargs)
+    def __init__(self, n_hid=10, **kwargs):
+        super(BBP_Bayes_RegNet, self).__init__(n_hid=n_hid, **kwargs)
     
     def create_net(self, set_seed=42):
         """create network
