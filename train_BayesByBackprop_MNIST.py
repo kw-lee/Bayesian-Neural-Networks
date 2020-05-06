@@ -4,7 +4,7 @@ import torch.utils.data
 from torchvision import transforms, datasets
 import argparse
 import matplotlib
-from src.Bayes_By_Backprop.model import *
+from src.Bayes_By_Backprop.model import BBP_Bayes_Net
 from src.Bayes_By_Backprop_Local_Reparametrization.model import *
 from os import mkdir
 

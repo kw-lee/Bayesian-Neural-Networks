@@ -113,13 +113,13 @@ class BayesLinear_Normalq(nn.Module):
             lpw = self.prior.loglike(W) + self.prior.loglike(b)
             return output, lqw, lpw
 
-class bayes_linear_2L(nn.Module):
+class BayesLinear2L(nn.Module):
     """2 hidden layer Bayes By Backprop (VI) Network
     
     x -> hidden -> hidden -> out
     """
     def __init__(self, input_dim, output_dim, n_hid, prior_instance):
-        super(bayes_linear_2L, self).__init__()
+        super(BayesLinear2L, self).__init__()
 
         # prior_instance = isotropic_gauss_prior(mu=0, sigma=0.1)
         # prior_instance = spike_slab_2GMM(mu1=0, mu2=0, sigma1=0.135, sigma2=0.001, pi=0.5)
@@ -239,7 +239,7 @@ class BBP_Bayes_Net(BaseNet):
     batch_size : int
         Batch size.
     Nbatches : int
-    nhid : int
+    n_hid : int
         The number of nodes for each hidden layers.
     prior_instance : object
         prior distribution.
@@ -249,7 +249,7 @@ class BBP_Bayes_Net(BaseNet):
     def __init__(
         self, lr=1e-3, channels_in=3, side_in=28, cuda=True, 
         classes=10, batch_size=128, Nbatches=0,
-        nhid=1200, prior_instance=laplace_prior(mu=0, b=0.1)
+        n_hid=1200, prior_instance=laplace_prior(mu=0, b=0.1)
     ):
         super(BBP_Bayes_Net, self).__init__()
         cprint('y', '  Creating Net!! ')
@@ -261,7 +261,7 @@ class BBP_Bayes_Net(BaseNet):
         self.batch_size = batch_size
         self.Nbatches = Nbatches
         self.prior_instance = prior_instance
-        self.nhid = nhid
+        self.n_hid = n_hid
         self.side_in = side_in
         self.create_net()
         self.create_opt()
@@ -281,10 +281,10 @@ class BBP_Bayes_Net(BaseNet):
         if self.cuda:
             torch.cuda.manual_seed(set_seed)
 
-        self.model = bayes_linear_2L(
+        self.model = BayesLinear2L(
             input_dim=self.channels_in * self.side_in * self.side_in,
             output_dim=self.classes, 
-            n_hid=self.nhid, 
+            n_hid=self.n_hid, 
             prior_instance=self.prior_instance)
         if self.cuda:
             self.model.cuda()

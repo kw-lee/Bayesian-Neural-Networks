@@ -1,7 +1,8 @@
 from src.priors import isotropic_gauss_prior
 from src.priors import *
 from src.base_net import *
-from src.Bayes_By_Backprop.model import w_to_std, sample_weights, BBP_Bayes_Net
+from src.Bayes_By_Backprop.model \
+    import w_to_std, BayesLinear_Normalq, BBP_Bayes_Net 
 import torch.nn as nn
 from torch.autograd import Variable
 import torch
@@ -28,30 +29,44 @@ def KLD_cost(mu_p, sig_p, mu_q, sig_q):
     # 0.5 * sum(1 + log(sigma^2) - mu^2 - sigma^2)
     return KLD
 
-
-class BayesLinear_local_reparam(nn.Module):
+class BayesLinear_Normalq_LR(BayesLinear_Normalq):
     """Linear Layer where activations are sampled from a fully factorised normal which is given by aggregating
      the moments of each weight's normal distribution. The KL divergence is obtained in closed form. Only works
       with gaussian priors.
     """
-    def __init__(self, n_in, n_out, prior_sig):
-        super(BayesLinear_local_reparam, self).__init__()
-        self.n_in = n_in
-        self.n_out = n_out
+    def __init__(
+        self, prior_sig=0.1, **kwargs
+    ):
         self.prior_sig = prior_sig
-
-        # Learnable parameters
-        self.W_mu = nn.Parameter(torch.Tensor(self.n_in, self.n_out).uniform_(-0.1, 0.1))
-        self.W_p = nn.Parameter(
-            torch.Tensor(self.n_in, self.n_out).uniform_(-3, -2))
-
-        self.b_mu = nn.Parameter(torch.Tensor(self.n_out).uniform_(-0.1, 0.1))
-        self.b_p = nn.Parameter(torch.Tensor(self.n_out).uniform_(-3, -2))
+        super(BayesLinear_Normalq_LR, self).__init__(
+            prior_class=isotropic_gauss_prior(mu=0.0, sigma=prior_sig), **kwargs)
 
     def forward(self, X, sample=False):
-        #         print(self.training)
+        """forward
 
-        if not self.training and not sample:  # This is just a placeholder function
+        Parameters
+        ----------
+        X : torch.tensor
+            Input
+        sample : bool, optional
+            Whether sample weights or not, by default False
+
+        Returns
+        -------
+        torch.tensor
+            Output
+        float 
+            KLD = log(q(sampled_weights)) - log(p(sampled_weights)), 
+            where q is the variational posterior distribution and
+            p is the prior distribution
+            0 if `sample=False`.
+        float 
+            0 for convinience
+        """
+        # print(self.training)
+
+        if not self.training and not sample:  
+            # When training return MLE of w for quick validation
             output = torch.mm(X, self.W_mu) + self.b_mu.expand(X.size()[0], self.n_out)
             return output, 0, 0
 
@@ -78,19 +93,17 @@ class BayesLinear_local_reparam(nn.Module):
             return output, kld, 0
 
 
-class bayes_linear_LR_2L(nn.Module):
-    def __init__(self, input_dim, output_dim, nhid, prior_sig):
-        super(bayes_linear_LR_2L, self).__init__()
+class BayesLinear2L_LR(nn.Module):
+    def __init__(self, input_dim, output_dim, n_hid, prior_sig):
+        super(BayesLinear2L_LR, self).__init__()
 
-        n_hid = nhid
         self.prior_sig = prior_sig
-
         self.input_dim = input_dim
         self.output_dim = output_dim
 
-        self.bfc1 = BayesLinear_local_reparam(input_dim, n_hid, self.prior_sig)
-        self.bfc2 = BayesLinear_local_reparam(n_hid, n_hid, self.prior_sig)
-        self.bfc3 = BayesLinear_local_reparam(n_hid, output_dim, self.prior_sig)
+        self.bfc1 = BayesLinear_Normalq_LR(self.prior_sig, n_in=input_dim, n_out=n_hid)
+        self.bfc2 = BayesLinear_Normalq_LR(self.prior_sig, n_in=n_hid, n_out=n_hid)
+        self.bfc3 = BayesLinear_Normalq_LR(self.prior_sig, n_in=n_hid, n_out=output_dim)
 
         # choose your non linearity
         # self.act = nn.Tanh()
@@ -114,11 +127,10 @@ class bayes_linear_LR_2L(nn.Module):
         torch.tensor
             Output.
         float
-            total log(q(theta)), where q is the variational posterior distribution.
+            total KLD
             0 if `sample=False`.
         float
-            total log(p(theta)), where p is the prior distribution.
-            0 of `sample=False`.
+            0 for convinience
         """
         tlqw = 0
         tlpw = 0
@@ -195,10 +207,10 @@ class BBP_Bayes_Net_LR(BBP_Bayes_Net):
         if self.cuda:
             torch.cuda.manual_seed(42)
 
-        self.model = bayes_linear_LR_2L(
+        self.model = BayesLinear2L_LR(
             input_dim=self.channels_in * self.side_in * self.side_in, 
             output_dim=self.classes,
-            nhid=self.nhid, prior_sig=self.prior_sig)
+            n_hid=self.n_hid, prior_sig=self.prior_sig)
         if self.cuda:
             self.model = self.model.cuda()
         #             cudnn.benchmark = True
