@@ -1,7 +1,8 @@
 """Modules consists of base network
 """
 
-from src.utils import cprint
+# from src.utils import cprint
+from src.utils import *
 import numpy as np
 import torch 
 
