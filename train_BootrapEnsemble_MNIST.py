@@ -6,6 +6,7 @@ import argparse
 import matplotlib
 from src.Bootstrap_Ensemble.model import *
 import copy
+from os import mkdir
 
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
