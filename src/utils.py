@@ -8,7 +8,7 @@ import os
 import sys
 try:
     import cPickle as pickle
-except:
+except ModuleNotFoundError:
     import pickle
 
 
