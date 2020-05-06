@@ -804,7 +804,7 @@ class BBP_Bayes_RegNet(BBP_Bayes_Net):
         float
             loss = complexity + negative-loglikelihood
         """
-        x, y = to_variable(var=(x, y.long()), cuda=self.cuda)
+        x, y = to_variable(var=(x, y), cuda=self.cuda)
 
         self.optimizer.zero_grad()
 
@@ -858,7 +858,7 @@ class BBP_Bayes_RegNet(BBP_Bayes_Net):
             predicted sigma
         """
         y = torch.zeros(1)
-        x, y = to_variable(var=(x, y.long()), cuda=self.cuda)
+        x, y = to_variable(var=(x, y), cuda=self.cuda)
 
         out, _, _ = self.model(x)
         pred_mean = out[:, :self.output_dim]
@@ -890,7 +890,7 @@ class BBP_Bayes_RegNet(BBP_Bayes_Net):
         torch.tensor
             predicted sigma
         """
-        x, y = to_variable(var=(x, y.long()), cuda=self.cuda)
+        x, y = to_variable(var=(x, y), cuda=self.cuda)
 
         pred_mean, pred_sigma = self.sample(x)
 
@@ -922,7 +922,7 @@ class BBP_Bayes_RegNet(BBP_Bayes_Net):
         torch.tensor
             probabilities for clasfication
         """
-        x, y = to_variable(var=(x, y.long()), cuda=self.cuda)
+        x, y = to_variable(var=(x, y), cuda=self.cuda)
 
         out, _, _ = self.model.sample_predict(x, Nsamples)
 
