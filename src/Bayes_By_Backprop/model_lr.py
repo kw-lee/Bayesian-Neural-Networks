@@ -1,5 +1,6 @@
 from src.priors import isotropic_gauss_prior
-from . import w_to_std, BayesLinear_Normalq, BBP_Bayes_Net 
+from . import w_to_std
+from .model import BayesLinear_Normalq, BayesLinearLn2, BBP_Bayes_Net, BBP_Bayes_RegNet
 import torch.nn as nn
 from torch.autograd import Variable
 import torch
@@ -89,18 +90,23 @@ class BayesLinear_Normalq_LR(BayesLinear_Normalq):
                 + KLD_cost(mu_p=0, sig_p=0.1, mu_q=self.b_mu, sig_q=std_b)
             return output, kld, 0
 
-
-class BayesLinear2L_LR(nn.Module):
-    def __init__(self, input_dim, output_dim, n_hid, prior_sig):
-        super(BayesLinear2L_LR, self).__init__()
+class BayesLinearLn_LR(nn.Module):
+    def __init__(self, input_dim, output_dim, n_hid, prior_sig, n_layer=1):
+        super(BayesLinearLn_LR, self).__init__()
 
         self.prior_sig = prior_sig
         self.input_dim = input_dim
         self.output_dim = output_dim
+        self.n_layer = n_layer
+        self.n_hid = n_hid
 
-        self.bfc1 = BayesLinear_Normalq_LR(self.prior_sig, n_in=input_dim, n_out=n_hid)
-        self.bfc2 = BayesLinear_Normalq_LR(self.prior_sig, n_in=n_hid, n_out=n_hid)
-        self.bfc3 = BayesLinear_Normalq_LR(self.prior_sig, n_in=n_hid, n_out=output_dim)
+        self.bfc_in = BayesLinear_Normalq_LR(self.prior_sig, n_in=input_dim, n_out=n_hid)
+        if self.n_layer >= 2:
+            for i in range(self.n_layer - 1):
+                bfc_name = f'bfc{i}'
+                setattr(self, bfc_name, BayesLinear_Normalq_LR(
+                    self.prior_sig, n_in=self.n_hid, n_out=self.n_hid))
+        self.bfc_out = BayesLinear_Normalq_LR(self.prior_sig, n_in=n_hid, n_out=output_dim)
 
         # choose your non linearity
         # self.act = nn.Tanh()
@@ -134,19 +140,21 @@ class BayesLinear2L_LR(nn.Module):
 
         x = x.view(-1, self.input_dim)  # view(batch_size, input_dim)
         # -----------------
-        x, lqw, lpw = self.bfc1(x, sample)
+        x, lqw, lpw = self.bfc_in(x, sample)
         tlqw += lqw
         tlpw += lpw
         # -----------------
-        x = self.act(x)
+        self.act(x)
         # -----------------
-        x, lqw, lpw = self.bfc2(x, sample)
-        tlqw += lqw
-        tlpw += lpw
+        if self.n_layer >= 2:
+            for i in range(self.n_layer - 1):
+                bfc_name = f'bfc{i}'
+                x, lqw, lpw = getattr(self, bfc_name)(x, sample)
+                tlqw += lqw
+                tlpw += lpw
+                self.act(x)
         # -----------------
-        x = self.act(x)
-        # -----------------
-        y, lqw, lpw = self.bfc3(x, sample)
+        y, lqw, lpw = self.bfc_out(x, sample)
         tlqw += lqw
         tlpw += lpw
 
@@ -188,6 +196,19 @@ class BayesLinear2L_LR(nn.Module):
 
         return predictions, tlqw_vec, tlpw_vec
 
+class BayesLinearLn2_LR(BayesLinearLn2):
+    """Bayesian Linear Network with 2 output layers with Local Reparameterization
+    """
+    def __init__(self, prior_sig=0.1, **kwargs):
+        self.prior_sig = prior_sig
+        super(BayesLinearLn2_LR, self).__init__(
+            prior_instance=isotropic_gauss_prior(mu=0.0, sigma=prior_sig), **kwargs
+        )
+        self.layer1 = BayesLinearLn_LR(
+            self.input_dim, self.output_dim, self.n_hid1, self.prior_sig, self.n_layer1)
+        self.layer2 = BayesLinearLn_LR(
+            self.input_dim, self.output_dim, self.n_hid2, self.prior_sig, self.n_layer2)
+
 class BBP_Bayes_Net_LR(BBP_Bayes_Net):
     """
     BBP_Bayes_Net with Local Reparameterization
@@ -199,18 +220,50 @@ class BBP_Bayes_Net_LR(BBP_Bayes_Net):
         super(BBP_Bayes_Net_LR, self).__init__(
             prior_instance=isotropic_gauss_prior(mu=0.0, sigma=prior_sig), **kwargs)
 
-    def create_net(self):
-        torch.manual_seed(42)
+    def create_net(self, set_seed=42):
+        torch.manual_seed(set_seed)
         if self.cuda:
-            torch.cuda.manual_seed(42)
+            torch.cuda.manual_seed(set_seed)
 
-        self.model = BayesLinear2L_LR(
+        self.model = BayesLinearLn_LR(
             input_dim=self.channels_in * self.side_in * self.side_in, 
             output_dim=self.classes,
-            n_hid=self.n_hid, prior_sig=self.prior_sig)
+            n_hid=self.n_hid, prior_sig=self.prior_sig,
+            n_layer=self.n_layer)
         if self.cuda:
             self.model = self.model.cuda()
         #             cudnn.benchmark = True
+        tot_nb_parameters = self.get_nb_parameters()
+
+        if tot_nb_parameters < 1e3:
+            print('    Total params: %f' % (tot_nb_parameters)) 
+        elif tot_nb_parameters < 1e6:
+            print('    Total params: %.2fK' % (tot_nb_parameters / 1e3)) 
+        else:
+            print('    Total params: %.2fM' % (tot_nb_parameters / 1e6))
+
+class BBP_Bayes_RegNet_LR(BBP_Bayes_RegNet):
+    """BBP_Bayes_RegNet with LR
+    """
+    def __init__(self, prior_sig=0.1, **kwargs):
+        self.prior_sig = prior_sig
+        super(BBP_Bayes_RegNet_LR, self).__init__(
+            prior_instance=isotropic_gauss_prior(mu=0.0, sigma=self.prior_sig), **kwargs
+        )
+
+    def create_net(self, set_seed=42):
+        torch.manual_seed(set_seed)
+        if self.cuda:
+            torch.cuda.manual_seed(set_seed)
+
+        self.model = BayesLinearLn2_LR(
+            input_dim=self.input_dim,
+            output_dim=self.output_dim, 
+            n_hid=self.n_hid, 
+            prior_sig=self.prior_sig,
+            n_layer=self.n_layer)
+        if self.cuda:
+            self.model.cuda()
         tot_nb_parameters = self.get_nb_parameters()
 
         if tot_nb_parameters < 1e3:

@@ -6,43 +6,9 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 import torch.nn as nn
 import copy
+from . import w_to_std, sample_weights
 from src.utils import cprint, to_variable
 from src.priors import isotropic_gauss_loglike, laplace_prior
-
-EPS = 1e-6
-
-def w_to_std(w, beta=1, threshold=20):
-    std_w = EPS + F.softplus(w, beta=beta, threshold=threshold)
-    return std_w
-
-def sample_weights(W_mu, b_mu, W_p, b_p):
-    """Quick method for sampling weights and exporting weights
-    
-    Sampling W from N(W_mu, std_w^2) as follows:
-        eps_W ~ N(0, 1^2)
-        std_w = 1e-6 + log(1+exp(W_p)) (if W_p > 20, std_w = 1e-6 + W_p)
-        W = W_mu + 1 * std_w * eps_W
-
-    Sampling b from N(b_mu, std_b^2) as follows:
-        eps_b ~ N(0, 1^2)
-        std_b = 1e-6 + log(1+exp(b_p)) (if b_p > 20, std_w = 1e-6 + b_p)
-        b = b_mu + 1 * std_b * eps_b
-
-    This function samples b only if b_mu is not `None`
-    """
-    eps_W = W_mu.data.new(W_mu.size()).normal_()
-    # sample parameters
-    std_w = w_to_std(W_p)
-    W = W_mu + 1 * std_w * eps_W
-
-    if b_mu is not None:
-        std_b = w_to_std(b_p)
-        eps_b = b_mu.data.new(b_mu.size()).normal_()
-        b = b_mu + 1 * std_b * eps_b
-    else:
-        b = None
-
-    return W, b
 
 class BayesLinear_Normalq(nn.Module):
     """Linear Layer where weights are sampled from a fully factorised Normal with learnable parameters. The likelihood
@@ -113,25 +79,29 @@ class BayesLinear_Normalq(nn.Module):
             lpw = self.prior.loglike(W) + self.prior.loglike(b)
             return output, lqw, lpw
 
-class BayesLinear2L(nn.Module):
+class BayesLinearLn(nn.Module):
     """2 hidden layer Bayes By Backprop (VI) Network
     
-    x -> hidden -> hidden -> out
+    x -> hidden * n_layer -> out
     """
-    def __init__(self, input_dim, output_dim, n_hid, prior_instance):
-        super(BayesLinear2L, self).__init__()
+    def __init__(self, input_dim, output_dim, n_hid, prior_instance, n_layer=1):
+        super(BayesLinearLn, self).__init__()
 
         # prior_instance = isotropic_gauss_prior(mu=0, sigma=0.1)
         # prior_instance = spike_slab_2GMM(mu1=0, mu2=0, sigma1=0.135, sigma2=0.001, pi=0.5)
         # prior_instance = isotropic_gauss_prior(mu=0, sigma=0.1)
         self.prior_instance = prior_instance
-
+        self.n_layer = n_layer
         self.input_dim = input_dim
         self.output_dim = output_dim
+        self.n_hid = n_hid
 
-        self.bfc1 = BayesLinear_Normalq(input_dim, n_hid, self.prior_instance)
-        self.bfc2 = BayesLinear_Normalq(n_hid, n_hid, self.prior_instance)
-        self.bfc3 = BayesLinear_Normalq(n_hid, output_dim, self.prior_instance)
+        self.bfc_in = BayesLinear_Normalq(self.input_dim, self.n_hid, self.prior_instance)
+        if self.n_layer >= 2:
+            for i in range(self.n_layer - 1):
+                bfc_name = f'bfc{i}'
+                setattr(self, bfc_name, BayesLinear_Normalq(self.n_hid, self.n_hid, self.prior_instance))
+        self.bfc_out = BayesLinear_Normalq(self.n_hid, self.output_dim, self.prior_instance)
 
         # choose your non linearity
         # self.act = nn.Tanh()
@@ -166,19 +136,21 @@ class BayesLinear2L(nn.Module):
 
         x = x.view(-1, self.input_dim)  # view(batch_size, input_dim)
         # -----------------
-        x, lqw, lpw = self.bfc1(x, sample)
+        x, lqw, lpw = self.bfc_in(x, sample)
         tlqw += lqw
         tlpw += lpw
         # -----------------
         x = self.act(x)
         # -----------------
-        x, lqw, lpw = self.bfc2(x, sample)
-        tlqw += lqw
-        tlpw += lpw
+        if self.n_layer >= 2:
+            for i in range(self.n_layer - 1):
+                bfc_name = f'bfc{i}'
+                x, lqw, lpw = getattr(self, bfc_name)(x, sample)
+                tlqw += lqw
+                tlpw += lpw
+                x = self.act(x)
         # -----------------
-        x = self.act(x)
-        # -----------------
-        y, lqw, lpw = self.bfc3(x, sample)
+        y, lqw, lpw = self.bfc_out(x, sample)
         tlqw += lqw
         tlpw += lpw
 
@@ -220,19 +192,20 @@ class BayesLinear2L(nn.Module):
 
         return predictions, tlqw_vec, tlpw_vec
 
-class BayesLinear2L2(nn.Module):
-    """2 hidden layer Bayes By Backprop (VI) Network with 2 output layers
+class BayesLinearLn2(nn.Module):
+    """n hidden layer Bayes By Backprop (VI) Network with 2 output layers
     
-    x -> hidden -> hidden -> out1
+    x -> hidden * n -> out1
       |
-      -> hidden -> hidden -> out2
+      -> hidden * n -> out2
     """
     def __init__(
-        self, input_dim, output_dim, n_hid, prior_instance,
+        self, input_dim, output_dim, n_hid, prior_instance, n_layer=1,
         n_hid1=None, n_hid2=None, 
-        prior_instance1=None, prior_instance2=None
+        prior_instance1=None, prior_instance2=None,
+        n_layer1=None, n_layer2=None
     ):
-        super(BayesLinear2L2, self).__init__()
+        super(BayesLinearLn2, self).__init__()
 
         if n_hid1 is None:
             self.n_hid1 = n_hid
@@ -254,13 +227,23 @@ class BayesLinear2L2(nn.Module):
         else:
             self.prior_instance2 = prior_instance2
 
+        if n_layer1 is None:
+            self.n_layer1 = n_layer
+        else:
+            self.n_layer1 = n_layer1
+
+        if n_layer2 is None:
+            self.n_layer2 = n_layer
+        else:
+            self.n_layer2 = n_layer2
+
         self.input_dim = input_dim
         self.output_dim = output_dim        
 
-        self.layer1 = BayesLinear2L(
-            self.input_dim, self.output_dim, self.n_hid1, self.prior_instance1)
-        self.layer2 = BayesLinear2L(
-            self.input_dim, self.output_dim, self.n_hid2, self.prior_instance2)
+        self.layer1 = BayesLinearLn(
+            self.input_dim, self.output_dim, self.n_hid1, self.prior_instance1, self.n_layer1)
+        self.layer2 = BayesLinearLn(
+            self.input_dim, self.output_dim, self.n_hid2, self.prior_instance2, self.n_layer2)
 
     def forward(self, x, sample=False):
         """forward
@@ -369,7 +352,7 @@ class BBP_Bayes_Net(BaseNet):
     def __init__(
         self, lr=1e-3, input_dim=None, channels_in=3, side_in=28, cuda=True, 
         output_dim=None, classes=10, batch_size=128, Nbatches=0,
-        n_hid=1200, prior_instance=laplace_prior(mu=0, b=0.1)
+        n_hid=1200, prior_instance=laplace_prior(mu=0, b=0.1), n_layer=2
     ):
         super(BBP_Bayes_Net, self).__init__()
         cprint('y', '  Creating Net!! ')
@@ -389,6 +372,7 @@ class BBP_Bayes_Net(BaseNet):
         self.Nbatches = Nbatches
         self.prior_instance = prior_instance
         self.n_hid = n_hid
+        self.n_layer = n_layer
         self.create_net()
         self.create_opt()
         self.epoch = 0
@@ -407,11 +391,12 @@ class BBP_Bayes_Net(BaseNet):
         if self.cuda:
             torch.cuda.manual_seed(set_seed)
 
-        self.model = BayesLinear2L(
+        self.model = BayesLinearLn(
             input_dim=self.input_dim,
             output_dim=self.output_dim, 
             n_hid=self.n_hid, 
-            prior_instance=self.prior_instance)
+            prior_instance=self.prior_instance,
+            n_layer=self.n_layer)
         if self.cuda:
             self.model.cuda()
         #             cudnn.benchmark = True
@@ -752,7 +737,7 @@ class BBP_Bayes_RegNet(BBP_Bayes_Net):
     prior_instance : object
         prior distribution.
     """
-    def __init__(self, n_hid=10, **kwargs):
+    def __init__(self, n_hid=100, **kwargs):
         super(BBP_Bayes_RegNet, self).__init__(n_hid=n_hid, **kwargs)
     
     def create_net(self, set_seed=42):
@@ -767,11 +752,12 @@ class BBP_Bayes_RegNet(BBP_Bayes_Net):
         if self.cuda:
             torch.cuda.manual_seed(set_seed)
 
-        self.model = BayesLinear2L2(
+        self.model = BayesLinearLn2(
             input_dim=self.input_dim,
             output_dim=self.output_dim, 
             n_hid=self.n_hid, 
-            prior_instance=self.prior_instance)
+            prior_instance=self.prior_instance,
+            n_layer=self.n_layer)
         if self.cuda:
             self.model.cuda()
         tot_nb_parameters = self.get_nb_parameters()
@@ -820,15 +806,15 @@ class BBP_Bayes_RegNet(BBP_Bayes_Net):
         x, y = to_variable(var=(x, y), cuda=self.cuda)
 
         self.optimizer.zero_grad()
+        x_len = x.shape[0]
 
         if samples == 1:
             out, tlqw, tlpw = self.model(x)
             mlpdw = -isotropic_gauss_loglike(
-                y, 
-                mu=out[:, :self.output_dim], 
-                sigma=out[:, self.output_dim:].exp(), 
-                do_sum=True)
-            Edkl = (tlqw - tlpw) / self.Nbatches
+                y, mu=out[:, :self.output_dim], 
+                sigma=w_to_std(out[:, self.output_dim:]), 
+                do_sum=True) / (self.Nbatches * x_len)
+            Edkl = (tlqw - tlpw) / x_len
         elif samples > 1:
             mlpdw_cum = 0
             Edkl_cum = 0
@@ -837,15 +823,16 @@ class BBP_Bayes_RegNet(BBP_Bayes_Net):
                 mlpdw_i = -isotropic_gauss_loglike(
                     y, 
                     mu=out[:, :self.output_dim], 
-                    sigma=out[:, self.output_dim:].exp(), 
-                    do_sum=True)
-                Edkl_i = (tlqw - tlpw) / self.Nbatches
+                    sigma=w_to_std(out[:, self.output_dim:]), 
+                    do_sum=True) / (self.Nbatches * x_len)
+                Edkl_i = (tlqw - tlpw) / x_len
                 mlpdw_cum += mlpdw_i
                 Edkl_cum += Edkl_i
             mlpdw = mlpdw_cum / samples
             Edkl = Edkl_cum / samples
 
-        loss = (Edkl + mlpdw) / x.shape[0]
+        loss = mlpdw + Edkl
+        # loss = mlpdw
         loss.backward()
         self.optimizer.step()
 
@@ -875,7 +862,7 @@ class BBP_Bayes_RegNet(BBP_Bayes_Net):
 
         out, _, _ = self.model(x)
         pred_mean = out[:, :self.output_dim]
-        pred_sigma = out[:, self.output_dim:].exp()
+        pred_sigma = w_to_std(out[:, self.output_dim:])
         
         if onlydata:
             return pred_mean.data, pred_sigma.data
@@ -940,7 +927,7 @@ class BBP_Bayes_RegNet(BBP_Bayes_Net):
         out, _, _ = self.model.sample_predict(x, Nsamples)
 
         pred_mean = out[:, :, :self.output_dim]
-        pred_sigma = out[:, :, self.output_dim:].exp()
+        pred_sigma = w_to_std(out[:, :, self.output_dim:])
 
         mean_pred_mean = pred_mean.mean(dim=0, keepdim=False)
         mean_pred_sigma = pred_sigma.mean(dim=0, keepdim=False)
